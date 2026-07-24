@@ -1,0 +1,65 @@
+# ============================================
+# PROTECTED: Data files (never commit)
+# ============================================
+data/raw/**/*
+data/processed/**/*
+data/summary/**/*
+!data/.gitkeep
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/summary/.gitkeep
+*.csv
+*.xlsx
+*.xls
+*.sql
+*.db
+*.sqlite
+*.sqlite3
+
+# Raw API responses (sensitive)
+*.json
+
+# MiMoCode internal
+.mimocode/
+!package.json
+!package-lock.json
+!tsconfig.json
+
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# ============================================
+# IDE
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================
+# OS
+# ============================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============================================
+# Logs & Temp
+# ============================================
+*.log
+logs/
+tmp/
+temp/
