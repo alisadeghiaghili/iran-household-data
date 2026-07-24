@@ -111,18 +111,45 @@ EXTENDED_INDICATORS = {
     "ER.H2O.INTR.PC": "internal_freshwater_per_capita",
 }
 
+# Realistic browser headers to avoid detection
 HEADERS = {
-    "User-Agent": "IranHouseholdScraper/1.0 (Academic Research)",
-    "Accept": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
 }
+
+# Retry configuration
+MAX_RETRIES = 5
+BASE_DELAY = 1.0
+MAX_DELAY = 60.0
+BACKOFF_FACTOR = 2.0
 
 
 # ============================================================
 # FETCH FUNCTIONS
 # ============================================================
 
-def fetch_indicator(indicator_code, country=WB_COUNTRY, start_year=1960, end_year=None):
-    """Fetch a single indicator from World Bank API."""
+import random
+
+def calculate_backoff(attempt):
+    """Calculate backoff delay with jitter."""
+    delay = min(BASE_DELAY * (BACKOFF_FACTOR ** attempt), MAX_DELAY)
+    jitter = delay * 0.5 * random.random()  # Add 0-50% jitter
+    return delay + jitter
+
+def should_retry(status_code, attempt):
+    """Determine if we should retry based on status code and attempt."""
+    if attempt >= MAX_RETRIES - 1:
+        return False
+    # Retry on rate limit or server errors
+    if status_code in (429, 500, 502, 503, 504):
+        return True
+    return False
+
+def fetch_indicator(indicator_code, country=WB_COUNTRY, start_year=1960, end_year=None, session=None):
+    """Fetch a single indicator from World Bank API with graceful backoff."""
     if end_year is None:
         end_year = datetime.now().year
     
@@ -133,9 +160,27 @@ def fetch_indicator(indicator_code, country=WB_COUNTRY, start_year=1960, end_yea
         "per_page": 500,
     }
     
-    for attempt in range(3):
+    for attempt in range(MAX_RETRIES):
         try:
-            resp = requests.get(url, params=params, headers=HEADERS, timeout=30)
+            # Use session for connection pooling if provided
+            requester = session or requests
+            resp = requester.get(url, params=params, headers=HEADERS, timeout=30)
+            
+            # Handle rate limiting with retry-after header
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", calculate_backoff(attempt)))
+                time.sleep(retry_after)
+                continue
+            
+            # Handle server errors with backoff
+            if resp.status_code >= 500:
+                if should_retry(resp.status_code, attempt):
+                    delay = calculate_backoff(attempt)
+                    time.sleep(delay)
+                    continue
+                else:
+                    return pd.DataFrame(columns=["year", "value"])
+            
             resp.raise_for_status()
             data = resp.json()
             
@@ -151,9 +196,14 @@ def fetch_indicator(indicator_code, country=WB_COUNTRY, start_year=1960, end_yea
             return pd.DataFrame(columns=["year", "value"])
             
         except requests.exceptions.SSLError:
-            time.sleep(2 ** attempt)
+            delay = calculate_backoff(attempt)
+            time.sleep(delay)
         except requests.exceptions.ConnectionError:
-            time.sleep(2 ** attempt)
+            delay = calculate_backoff(attempt)
+            time.sleep(delay)
+        except requests.exceptions.Timeout:
+            delay = calculate_backoff(attempt)
+            time.sleep(delay)
         except Exception as e:
             print(f"    Error: {e}")
             return pd.DataFrame(columns=["year", "value"])
@@ -166,18 +216,24 @@ def fetch_all_indicators(indicators, label="indicators"):
     print(f"\nFetching {label}...")
     
     frames = []
-    for code, name in indicators.items():
-        print(f"  {name} ({code})", end="...")
-        df = fetch_indicator(code)
+    # Use session for connection pooling
+    with requests.Session() as session:
+        session.headers.update(HEADERS)
         
-        if not df.empty:
-            df = df.rename(columns={"value": name})
-            frames.append(df)
-            print(f" OK ({len(df)} years)")
-        else:
-            print(" no data")
-        
-        time.sleep(0.3)  # Rate limiting
+        for code, name in indicators.items():
+            print(f"  {name} ({code})", end="...")
+            df = fetch_indicator(code, session=session)
+            
+            if not df.empty:
+                df = df.rename(columns={"value": name})
+                frames.append(df)
+                print(f" OK ({len(df)} years)")
+            else:
+                print(" no data")
+            
+            # Randomized delay to avoid detection patterns
+            delay = 0.5 + random.random() * 1.0  # 0.5-1.5 seconds
+            time.sleep(delay)
     
     if not frames:
         return pd.DataFrame()
@@ -208,7 +264,9 @@ def fetch_all(output_dir):
         main_df.to_csv(path, index=False)
         print(f"\nSaved main indicators: {path}")
     
-    time.sleep(1)
+    # Longer pause between batches to avoid rate limiting
+    delay = 3 + random.random() * 2  # 3-5 seconds
+    time.sleep(delay)
     
     # Fetch extended indicators
     ext_df = fetch_all_indicators(EXTENDED_INDICATORS, "extended indicators")
