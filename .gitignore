@@ -19,11 +19,15 @@ data/summary/**/*
 # Raw API responses (sensitive)
 *.json
 
-# MiMoCode internal
+# ============================================
+# MiMo / MiMoCode (never commit)
+# ============================================
 .mimocode/
-!package.json
-!package-lock.json
-!tsconfig.json
+.mimo/
+mimocode.json
+mimocode.jsonc
+*.mimo
+.mimo-history
 
 # ============================================
 # Python
