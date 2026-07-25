@@ -126,6 +126,42 @@ BASE_DELAY = 1.0
 MAX_DELAY = 60.0
 BACKOFF_FACTOR = 2.0
 
+# ============================================================
+# WHO GLOBAL HEALTH OBSERVATORY
+# ============================================================
+WHO_API_BASE = "https://ghoapi.azureedge.net/api"
+WHO_INDICATORS = {
+    "WHOSIS_000001": "who_life_expectancy",
+    "WHOSIS_000003": "who_neonatal_mortality",
+    "MDG_0000000001": "who_infant_mortality",
+    "NCD_BMI_30A": "who_obesity_rate",
+    "HWF_0001": "who_physicians_per_10k",
+    "HWF_0002": "who_nurses_per_10k",
+    "WHS6_102": "who_ncd_mortality",
+    "WHS4_544": "who_tobacco_use",
+    "WHS3_49": "who_skilled_birth_attendant",
+    "MDG_0000000007": "who_hiv_prevalence",
+}
+
+# ============================================================
+# UNESCO INSTITUTE FOR STATISTICS
+# ============================================================
+UNESCO_API_BASE = "https://data.uis.unesco.org/ws/rs/sdmx/data/UNESCO,EDUCATION_NERA_GL,1.0"
+UNESCO_INDICATORS = {
+    "SE.ENR.PRSC.FM.ZS": "unesco_gender_parity_primary",
+    "SE.SEC.ENRR.FE": "unesco_secondary_enrollment_female",
+    "SE.TER.ENRR.MA": "unesco_tertiary_enrollment_male",
+}
+
+# ============================================================
+# IMF DATA (disabled - API unreliable)
+# ============================================================
+# IMF_API_BASE = "https://www.imf.org/external/datamapper/api/v1"
+# IMF_INDICATORS = {
+#     "NGDPD": "imf_gdp_nominal",
+#     "PCPIPCH": "imf_inflation",
+# }
+
 
 # ============================================================
 # FETCH FUNCTIONS
@@ -211,6 +247,92 @@ def fetch_indicator(indicator_code, country=WB_COUNTRY, start_year=1960, end_yea
     return pd.DataFrame(columns=["year", "value"])
 
 
+def fetch_who_indicator(indicator_code, country="IRN", session=None):
+    """Fetch a single indicator from WHO GHO API."""
+    url = f"{WHO_API_BASE}/{indicator_code}"
+    params = {"$filter": f"SpatialDim eq '{country}'"}
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            requester = session or requests
+            resp = requester.get(url, params=params, headers=HEADERS, timeout=30)
+            
+            if resp.status_code == 429:
+                time.sleep(calculate_backoff(attempt))
+                continue
+            if resp.status_code >= 500:
+                if should_retry(resp.status_code, attempt):
+                    time.sleep(calculate_backoff(attempt))
+                    continue
+                return pd.DataFrame(columns=["year", "value"])
+            
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if "value" in data and data["value"]:
+                records = []
+                for item in data["value"]:
+                    if "NumericValue" in item and item["NumericValue"] is not None:
+                        records.append({
+                            "year": int(item["TimeDim"]),
+                            "value": float(item["NumericValue"]),
+                        })
+                if records:
+                    df = pd.DataFrame(records)
+                    # Aggregate by year (take mean if multiple values per year)
+                    df = df.groupby("year")["value"].mean().reset_index()
+                    return df
+            return pd.DataFrame(columns=["year", "value"])
+            
+        except Exception as e:
+            print(f"    WHO Error: {e}")
+            return pd.DataFrame(columns=["year", "value"])
+    
+    return pd.DataFrame(columns=["year", "value"])
+
+
+def fetch_imf_indicator(indicator_code, session=None):
+    """Fetch a single indicator from IMF Data API."""
+    url = f"{IMF_API_BASE}/{indicator_code}/IRN"
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            requester = session or requests
+            resp = requester.get(url, headers=HEADERS, timeout=30)
+            
+            if resp.status_code == 429:
+                time.sleep(calculate_backoff(attempt))
+                continue
+            if resp.status_code >= 500:
+                if should_retry(resp.status_code, attempt):
+                    time.sleep(calculate_backoff(attempt))
+                    continue
+                return pd.DataFrame(columns=["year", "value"])
+            
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if "values" in data:
+                records = []
+                for year, value in data["values"].items():
+                    if value is not None:
+                        try:
+                            records.append({
+                                "year": int(year),
+                                "value": float(value),
+                            })
+                        except (ValueError, TypeError):
+                            pass
+                return pd.DataFrame(records) if records else pd.DataFrame(columns=["year", "value"])
+            return pd.DataFrame(columns=["year", "value"])
+            
+        except Exception as e:
+            print(f"    IMF Error: {e}")
+            return pd.DataFrame(columns=["year", "value"])
+    
+    return pd.DataFrame(columns=["year", "value"])
+
+
 def fetch_all_indicators(indicators, label="indicators"):
     """Fetch multiple indicators and return as combined DataFrame."""
     print(f"\nFetching {label}...")
@@ -257,38 +379,66 @@ def fetch_all(output_dir):
     print(f"Output directory: {output_dir}")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Fetch main indicators
-    main_df = fetch_all_indicators(INDICATORS, "main indicators")
+    # Fetch World Bank main indicators
+    main_df = fetch_all_indicators(INDICATORS, "World Bank main indicators")
     if not main_df.empty:
-        path = os.path.join(raw_dir, "main_indicators.csv")
+        path = os.path.join(raw_dir, "wb_main_indicators.csv")
         main_df.to_csv(path, index=False)
-        print(f"\nSaved main indicators: {path}")
+        print(f"\nSaved WB main indicators: {path}")
     
-    # Longer pause between batches to avoid rate limiting
-    delay = 3 + random.random() * 2  # 3-5 seconds
-    time.sleep(delay)
+    # Longer pause between batches
+    time.sleep(3 + random.random() * 2)
     
-    # Fetch extended indicators
-    ext_df = fetch_all_indicators(EXTENDED_INDICATORS, "extended indicators")
+    # Fetch World Bank extended indicators
+    ext_df = fetch_all_indicators(EXTENDED_INDICATORS, "World Bank extended indicators")
     if not ext_df.empty:
-        path = os.path.join(raw_dir, "extended_indicators.csv")
+        path = os.path.join(raw_dir, "wb_extended_indicators.csv")
         ext_df.to_csv(path, index=False)
-        print(f"\nSaved extended indicators: {path}")
+        print(f"\nSaved WB extended indicators: {path}")
+    
+    time.sleep(3 + random.random() * 2)
+    
+    # Fetch WHO indicators
+    print("\nFetching WHO Global Health Observatory...")
+    who_frames = []
+    with requests.Session() as session:
+        session.headers.update(HEADERS)
+        for code, name in WHO_INDICATORS.items():
+            print(f"  {name} ({code})", end="...")
+            df = fetch_who_indicator(code, session=session)
+            if not df.empty:
+                df = df.rename(columns={"value": name})
+                who_frames.append(df)
+                print(f" OK ({len(df)} years)")
+            else:
+                print(" no data")
+            time.sleep(0.5 + random.random() * 0.5)
+    
+    who_df = pd.DataFrame()
+    if who_frames:
+        who_df = who_frames[0]
+        for df in who_frames[1:]:
+            who_df = who_df.merge(df, on="year", how="outer")
+        path = os.path.join(raw_dir, "who_indicators.csv")
+        who_df.to_csv(path, index=False)
+        print(f"\nSaved WHO indicators: {path}")
     
     # Save fetch metadata
     metadata = {
         "fetched_at": datetime.now().isoformat(),
         "country": WB_COUNTRY,
-        "main_indicators_count": len(INDICATORS),
-        "extended_indicators_count": len(EXTENDED_INDICATORS),
-        "main_rows": len(main_df),
-        "ext_rows": len(ext_df),
+        "sources": {
+            "world_bank": {"main": len(main_df), "extended": len(ext_df)},
+            "who": len(who_df) if not who_df.empty else 0,
+        },
     }
     with open(os.path.join(raw_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
     
-    print("\nFetch complete!")
-    return main_df, ext_df
+    print("\n" + "=" * 60)
+    print("FETCH COMPLETE!")
+    print("=" * 60)
+    return main_df, ext_df, who_df
 
 
 # ============================================================
@@ -305,29 +455,43 @@ def process_data(output_dir):
     print("PROCESSING DATA")
     print("=" * 60)
     
-    # Load raw data
-    main_path = os.path.join(raw_dir, "main_indicators.csv")
-    ext_path = os.path.join(raw_dir, "extended_indicators.csv")
+    # Load all raw data sources
+    sources = {}
+    source_files = {
+        "wb_main": "wb_main_indicators.csv",
+        "wb_extended": "wb_extended_indicators.csv",
+        "who": "who_indicators.csv",
+    }
     
-    if not os.path.exists(main_path):
+    for name, filename in source_files.items():
+        path = os.path.join(raw_dir, filename)
+        if os.path.exists(path):
+            df = pd.read_csv(path)
+            sources[name] = df
+            print(f"Loaded {name}: {len(df)} rows x {len(df.columns)} cols")
+    
+    if not sources:
         print("Error: No raw data found. Run fetch first.")
         return None
     
-    main_df = pd.read_csv(main_path)
-    ext_df = pd.read_csv(ext_path) if os.path.exists(ext_path) else pd.DataFrame()
+    # Start with World Bank main indicators
+    combined = sources.get("wb_main", pd.DataFrame())
     
-    print(f"Loaded main: {len(main_df)} rows x {len(main_df.columns)} cols")
-    if not ext_df.empty:
-        print(f"Loaded extended: {len(ext_df)} rows x {len(ext_df.columns)} cols")
-    
-    # Merge datasets
-    combined = main_df.copy()
-    if not ext_df.empty:
-        # Rename conflicting columns
+    # Merge extended World Bank indicators
+    if "wb_extended" in sources:
+        ext_df = sources["wb_extended"]
         for col in ext_df.columns:
             if col != "year" and col in combined.columns:
                 ext_df = ext_df.rename(columns={col: f"{col}_ext"})
         combined = combined.merge(ext_df, on="year", how="outer")
+    
+    # Merge WHO indicators
+    if "who" in sources:
+        who_df = sources["who"]
+        for col in who_df.columns:
+            if col != "year" and col in combined.columns:
+                who_df = who_df.rename(columns={col: f"{col}_who"})
+        combined = combined.merge(who_df, on="year", how="outer")
     
     # Remove duplicates and sort
     combined = combined.loc[:, ~combined.columns.duplicated()]
